@@ -1,10 +1,10 @@
 package main
 
 import (
-	"bufio"
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -15,14 +15,24 @@ import (
 )
 
 var (
-	kernel32                  = syscall.NewLazyDLL("kernel32.dll")
-	procSetConsoleOutputCP    = kernel32.NewProc("SetConsoleOutputCP")
-	procSetConsoleCP          = kernel32.NewProc("SetConsoleCP")
-	procGetConsoleProcessList = kernel32.NewProc("GetConsoleProcessList")
+	kernel32               = syscall.NewLazyDLL("kernel32.dll")
+	procSetConsoleOutputCP = kernel32.NewProc("SetConsoleOutputCP")
+	procSetConsoleCP       = kernel32.NewProc("SetConsoleCP")
+	user32                 = syscall.NewLazyDLL("user32.dll")
+	procMessageBoxW        = user32.NewProc("MessageBoxW")
+)
+
+const (
+	mbYesNo           = 0x00000004
+	mbIconError       = 0x00000010
+	mbIconQuestion    = 0x00000020
+	mbIconInformation = 0x00000040
+	mbSetForeground   = 0x00010000
+	idYes             = 6
 )
 
 func init() {
-	// 让控制台以 UTF-8 显示中文，避免提示信息乱码
+	// 控制台构建时让中文提示正常显示；GUI 构建时该调用无副作用
 	procSetConsoleOutputCP.Call(65001)
 	procSetConsoleCP.Call(65001)
 }
@@ -56,12 +66,38 @@ func main() {
 	}
 	if err := writeCSV(abs, info); err != nil {
 		fmt.Fprintln(os.Stderr, "生成 CSV 失败: "+err.Error())
-		pauseIfNeeded()
+		messageBox("设备信息采集失败：\n\n"+err.Error()+"\n\n请联系管理员处理。",
+			"设备信息采集失败", mbIconError|mbSetForeground)
 		os.Exit(1)
 	}
 
 	fmt.Println("已生成设备台账: " + abs)
-	pauseIfNeeded()
+	if messageBox("设备信息采集完成。\n\n已生成台账文件：\n"+abs+"\n\n是否打开文件所在位置？",
+		"设备信息采集完成", mbYesNo|mbIconInformation|mbSetForeground) == idYes {
+		openFileLocation(abs)
+	}
+}
+
+// messageBox 弹出系统消息框；没有桌面会话（如服务方式运行）时返回 0
+func messageBox(text, caption string, flags uintptr) int {
+	t, err := syscall.UTF16PtrFromString(text)
+	if err != nil {
+		return 0
+	}
+	c, err := syscall.UTF16PtrFromString(caption)
+	if err != nil {
+		return 0
+	}
+	ret, _, _ := procMessageBoxW.Call(0,
+		uintptr(unsafe.Pointer(t)),
+		uintptr(unsafe.Pointer(c)),
+		flags,
+	)
+	return int(ret)
+}
+
+func openFileLocation(path string) {
+	_ = exec.Command("explorer.exe", "/select,"+path).Start()
 }
 
 // desktopDir 通过注册表获取桌面目录，可正确处理 OneDrive 重定向等情况
@@ -99,15 +135,4 @@ func sanitizeFileName(s string) string {
 		}
 		return r
 	}, s)
-}
-
-// pauseIfNeeded 在双击运行时（控制台里只有当前进程）等待回车，避免窗口一闪而过
-func pauseIfNeeded() {
-	var pids [4]uint32
-	n, _, _ := procGetConsoleProcessList.Call(uintptr(unsafe.Pointer(&pids[0])), uintptr(len(pids)))
-	if n > 1 {
-		return
-	}
-	fmt.Print("按回车键退出...")
-	_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
 }
