@@ -48,6 +48,10 @@ go mod download
 go build -trimpath -ldflags "-s -w" -o getDeviceInfo.exe .
 ```
 
+> 末尾的 `.` 表示“编译当前目录下的整个包”，会把 `main.go`、`collect.go`、`gpu.go`、`printer.go` 一起编进去。
+> 不要写成 `go build main.go`——那只会编译单个文件，会报 `undefined: collectDeviceInfo` 之类的错误。
+> 也可以直接用不带参数的 `go build -o getDeviceInfo.exe`（在模块根目录时等价）。
+
 产物 `getDeviceInfo.exe` 约 2.8 MB，单文件、纯静态，无需 .NET / Python / VC++ 运行时，直接拷到其他机器即可运行。
 
 ### 3. 编译后自检
