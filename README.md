@@ -117,7 +117,29 @@ $all | Set-Content -Path "D:\资产台账\汇总.csv" -Encoding utf8BOM
 | 参数 | 说明 |
 | --- | --- |
 | `-out <路径>` | 指定输出文件，可带目录；不指定时保存到桌面 |
+| `-no-ui` | 不弹提示框，只输出到控制台（自动化、无人值守、CI 用） |
 | `-h` | 显示帮助 |
+
+## 在 GitHub Actions 上验证
+
+仓库已内置 Windows 验证工作流 [.github/workflows/verify-windows.yml](.github/workflows/verify-windows.yml)：
+
+- **触发**：推送到 `master` / `main`、提交 PR，或在 GitHub 页面 `Actions → verify-windows → Run workflow` 手动运行。
+- **矩阵**：`windows-2022`、`windows-latest`（覆盖 Windows Server 2022 及最新的 Windows Server 版本）。
+- **流程**：`go vet` → 编译 GUI 版 exe → 用 `-no-ui -out` 采集 → 校验 CSV → 在 Job Summary 生成字段表格 → 上传 CSV artifact。
+
+校验规则：
+
+1. 文件以 UTF-8 BOM 开头；
+2. 恰好 1 行表头 + 1 行数据，列数为 20；
+3. 电脑名称、CPU 型号、显卡型号非空，CPU 核心数 > 0，内存大小 > 0；
+4. MAC 地址符合 `XX:XX:XX:XX:XX:XX`，IP 地址包含合法 IPv4。
+
+查看结果：进入对应 workflow run，Job 页面底部 Summary 可直接看到这台 runner 的采集结果；`Artifacts` 里可下载 `device.csv`。
+
+> CI 只能验证“构建成功 + 采集不崩溃 + CSV 结构与关键字段正确”。
+> runner 是 Azure 云主机，显卡为虚拟显卡、没有实体打印机、也没有 `nvidia-smi`，因此显卡/打印机相关列与真机不同；
+> 双击运行、弹窗、桌面路径这些交互体验无法在 CI 中验证，需在真机或 Windows 沙盒里手工验收（CI 中使用 `-no-ui` 跳过弹窗）。
 
 ## 数据来源与限制
 

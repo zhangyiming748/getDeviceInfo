@@ -39,6 +39,7 @@ func init() {
 
 func main() {
 	out := flag.String("out", "", "输出 CSV 文件路径，默认为当前用户桌面")
+	noUI := flag.Bool("no-ui", false, "不弹出提示框，仅输出到控制台（自动化/无人值守用）")
 	flag.Parse()
 
 	info, warnings := collectDeviceInfo()
@@ -66,12 +67,17 @@ func main() {
 	}
 	if err := writeCSV(abs, info); err != nil {
 		fmt.Fprintln(os.Stderr, "生成 CSV 失败: "+err.Error())
-		messageBox("设备信息采集失败：\n\n"+err.Error()+"\n\n请联系管理员处理。",
-			"设备信息采集失败", mbIconError|mbSetForeground)
+		if !*noUI {
+			messageBox("设备信息采集失败：\n\n"+err.Error()+"\n\n请联系管理员处理。",
+				"设备信息采集失败", mbIconError|mbSetForeground)
+		}
 		os.Exit(1)
 	}
 
 	fmt.Println("已生成设备台账: " + abs)
+	if *noUI {
+		return
+	}
 	if messageBox("设备信息采集完成。\n\n已生成台账文件：\n"+abs+"\n\n是否打开文件所在位置？",
 		"设备信息采集完成", mbYesNo|mbIconInformation|mbSetForeground) == idYes {
 		openFileLocation(abs)
