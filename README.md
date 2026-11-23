@@ -120,13 +120,25 @@ $all | Set-Content -Path "D:\资产台账\汇总.csv" -Encoding utf8BOM
 | `-no-ui` | 不弹提示框，只输出到控制台（自动化、无人值守、CI 用） |
 | `-h` | 显示帮助 |
 
-## 在 GitHub Actions 上验证
+## 在 GitHub Actions 上验证并构建二进制
 
-仓库已内置 Windows 验证工作流 [.github/workflows/verify-windows.yml](.github/workflows/verify-windows.yml)：
+仓库内置两部分：验证/构建工作流 [.github/workflows/verify-windows.yml](.github/workflows/verify-windows.yml)，以及 GoReleaser 配置 [.goreleaser.yaml](.goreleaser.yaml)。
 
-- **触发**：推送到 `master` / `main`、提交 PR，或在 GitHub 页面 `Actions → verify-windows → Run workflow` 手动运行。
-- **矩阵**：`windows-2022`、`windows-latest`（覆盖 Windows Server 2022 及最新的 Windows Server 版本）。
-- **流程**：`go vet` → 编译 GUI 版 exe → 用 `-no-ui -out` 采集 → 校验 CSV → 在 Job Summary 生成字段表格 → 上传 CSV artifact。
+- **触发**：推送到 `master` / `main`、提交 PR、推送 `v*` 标签，或在 GitHub 页面 `Actions → verify-and-build → Run workflow` 手动运行。
+- **verify job**：`windows-2022`、`windows-latest` 矩阵，编译 GUI 版 exe → 用 `-no-ui -out` 采集 → 校验 CSV → 在 Job Summary 生成字段表格 → 上传 CSV。
+- **release job**（需 verify 通过）：在 `windows-latest` 上运行 GoReleaser，产出 **amd64 / 386 / arm64 三个 Windows 二进制**，打包成 zip 并附 `checksums.txt`，统一作为 `getDeviceInfo-dist` artifact 上传。
+- 若推送的是 `v*` 标签，release job 改用 `release --clean`，直接把 zip 发布到 GitHub Release；普通推送/PR/手动运行则用 `--snapshot`，只出产物不发布。
+
+下载产物：进入 Actions run 页面 → 底部 `Artifacts` → 下载 `getDeviceInfo-dist`，解压即得到对应架构的 `getDeviceInfo.exe`。
+
+本地等价命令（需要先 `go install github.com/goreleaser/goreleaser/v2@latest`）：
+
+```powershell
+goreleaser check                          # 校验 .goreleaser.yaml
+goreleaser release --snapshot --clean     # 本地出包，产物在 dist/
+```
+
+GoReleaser 的编译参数与手工构建一致：`-trimpath -s -w -H windowsgui`，即双击不弹黑框的交付版本。
 
 校验规则：
 
