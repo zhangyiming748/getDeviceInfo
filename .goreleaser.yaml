@@ -1,0 +1,33 @@
+version: 2
+
+project_name: getDeviceInfo
+
+builds:
+  - id: getDeviceInfo
+    main: .
+    binary: getDeviceInfo
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - windows
+    goarch:
+      - amd64
+      - "386"
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -H windowsgui
+
+archives:
+  - id: default
+    formats:
+      - zip
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  disable: true
