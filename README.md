@@ -11,8 +11,8 @@ CSV 默认输出到当前用户桌面（文件名 `设备台账_<电脑名>_<时
 
 | 列名 | 说明 |
 | --- | --- |
-| 电脑名称 | `Win32_ComputerSystem.Name` |
-| Hostname | `os.Hostname()`（为空时取网卡 DNS 主机名） |
+| 电脑名称 | `Win32_ComputerSystem.Name`（WMI 读取失败时退回系统 Hostname；两者实际是同一个名称，故只保留一列） |
+| 电脑型号 | `Win32_ComputerSystem.Model`；组装机可能返回 `System Product Name` 等 OEM 占位值 |
 | IP地址 | 所有已启用网卡的 IPv4，其后为全局 IPv6，`/` 分隔；排除 127.x、169.254.x、fe80:: 等 |
 | MAC地址 | 所有网卡（排除 WAN Miniport、蓝牙 PAN 等虚拟/隧道网卡），`/` 分隔 |
 | CPU型号 | 物理 CPU 型号，多路时 `/` 分隔 |
@@ -24,8 +24,20 @@ CSV 默认输出到当前用户桌面（文件名 `设备台账_<电脑名>_<时
 | 显卡频率(MHz) / 显卡内存频率(MHz) | 仅 NVIDIA 可通过 `nvidia-smi` 获取，其他显卡为 `-` |
 | 打印机名称 / IP地址 / MAC地址 | 本机已安装的打印机；IP 来自 TCP/IP 端口或 `IP_`、共享端口解析；MAC 通过 ARP 查询 |
 | 打印机端口 | WSD 端口 / TCP/IP 端口 / USB 端口 / 共享打印机端口等 |
+| 电脑品牌 / 整机序列号 / 硬件UUID | `Win32_ComputerSystem`、`Win32_ComputerSystemProduct`；序列号为空时回退到 BIOS、机箱序列号 |
+| 机箱类型 / 资产标签 | `Win32_SystemEnclosure` 的机箱类型代码及 SMBIOS 资产标签 |
+| 主板厂商 / 主板型号 / 主板版本 / 主板序列号 | `Win32_BaseBoard`；可用于补充组装机的具体硬件型号 |
+| BIOS厂商 / BIOS版本 / BIOS发布日期 | `Win32_BIOS`；日期尽量格式化为 `yyyy-MM-dd` |
+| CPU插槽 | `Win32_Processor.SocketDesignation`，多路 CPU 去重后 `/` 分隔 |
+| 内存插槽 / 内存厂商 / 内存料号 | `Win32_PhysicalMemory`；插槽取 `DeviceLocator`，为空时回退 `BankLabel`；插槽个数即已安装内存条数量 |
+| 物理硬盘型号 / 序列号 / 容量(GB) / 接口 / 介质 | `Win32_DiskDrive`；容量按 1024³ 换算并保留一位小数 |
+| 逻辑分区盘符 / 卷标 / 文件系统 / 容量(GB) / 可用空间(GB) | `Win32_LogicalDisk` 中本地固定卷（`DriveType = 3`） |
+| 显示器厂商 / 显示器型号 / 显示器序列号 | `root\wmi` 的 `WmiMonitorID`，仅采集活动显示器并解码 EDID 文本 |
+| 声卡名称 / 声卡厂商 | `Win32_SoundDevice` |
+| 物理网卡名称 / 物理网卡速率(Mbps) | `Win32_NetworkAdapter` 中实体网卡；过滤常见虚拟适配器，速率为链路速率 |
+| 电池名称 / 电量(%) / 状态 / 设计容量(mWh) / 满充容量(mWh) | `Win32_Battery`；台式机无电池时整组留空 |
 
-同一单元格内的多项数据统一使用 `/` 分隔；显卡列缺失值用 `-` 占位以保持与型号列对齐。
+CSV 共 58 列：原 20 列保持不变，38 个硬件字段从“电脑品牌”开始依次追加到末尾。同一单元格内的多项数据统一使用 `/` 分隔；新增硬件原始值中的 `/` 会显示为全角 `／`，避免与分隔符混淆。显卡及新增多设备硬件列的单个缺失值用 `-` 占位，整类设备不存在时为空，以保持各列顺序对齐。
 
 ## 构建方法（忘了就照这里做）
 
@@ -48,7 +60,7 @@ go mod download
 go build -trimpath -ldflags "-s -w -H windowsgui" -o getDeviceInfo.exe .
 ```
 
-> 末尾的 `.` 表示“编译当前目录下的整个包”，会把 `main.go`、`collect.go`、`gpu.go`、`printer.go` 一起编进去。
+> 末尾的 `.` 表示“编译当前目录下的整个包”，会把 `main.go`、`collect.go`、`hardware.go`、`gpu.go`、`printer.go` 一起编进去。
 > 不要写成 `go build main.go`——那只会编译单个文件，会报 `undefined: collectDeviceInfo` 之类的错误。
 > 也可以直接用不带参数的 `go build -o getDeviceInfo.exe`（在模块根目录时等价）。
 >
@@ -143,7 +155,7 @@ GoReleaser 的编译参数与手工构建一致：`-trimpath -s -w -H windowsgui
 校验规则：
 
 1. 文件以 UTF-8 BOM 开头；
-2. 恰好 1 行表头 + 1 行数据，列数为 20；
+2. 恰好 1 行表头 + 1 行数据，列数为 58，且原 20 列表头顺序不变；
 3. 电脑名称、CPU 型号、显卡型号非空，CPU 核心数 > 0，内存大小 > 0；
 4. MAC 地址符合 `XX:XX:XX:XX:XX:XX`，IP 地址包含合法 IPv4。
 
@@ -155,7 +167,11 @@ GoReleaser 的编译参数与手工构建一致：`-trimpath -s -w -H windowsgui
 
 ## 数据来源与限制
 
-- CPU、内存、网卡、显卡型号、打印机均通过 WMI（`root\cimv2`）读取，需要 WMI 服务（`winmgmt`）正常。
+- CPU、内存、网卡、显卡型号、打印机及新增硬件信息主要通过 WMI（`root\cimv2`）读取，显示器 EDID 来自 `root\wmi`，需要 WMI 服务（`winmgmt`）正常。各类硬件独立容错，单项失败不会中断整份 CSV。
+- 主板、BIOS、序列号、UUID、机箱和电池等字段依赖 OEM 固件；组装机、虚拟机或精简系统可能返回空值或 `System Product Name`、`To Be Filled By O.E.M.` 等占位文本。
+- `Win32_DiskDrive` 的接口和介质值原样输出，不能据此可靠判断 SSD/HDD；未引入需要额外权限的 SMART 或厂商工具。
+- 物理网卡速率是 WMI 报告的最大/当前链路速率，不代表实时吞吐；断开的网卡速率可能为空。
+- 显示器信息来自 EDID，扩展坞、KVM、远程桌面和部分虚拟显示器可能缺少厂商、型号或序列号。
 - 显存大小优先读注册表 `HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-...}\xxxx\HardwareInformation.qwMemorySize`；集成显卡无独立显存，显存列显示 `-`、类型显示“共享内存”。
 - Windows 不提供显存颗粒类型（GDDR5/GDDR6 等）的 API，独立显卡统一标注为 `GDDR`；显存频率只能从 NVIDIA 驱动自带的 `nvidia-smi` 读取，机器未安装 NVIDIA 驱动工具时为空。
 - WSD / IPP 端口的打印机，Windows 不保存其 IP 地址，因此这类打印机的 IP、MAC 列为空；使用标准 TCP/IP 端口或共享端口的打印机可正常解析。

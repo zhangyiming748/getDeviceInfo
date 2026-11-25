@@ -60,7 +60,20 @@ jobs:
 
           $row = Import-Csv $csv -Encoding UTF8
           $cols = @($row.PSObject.Properties.Name)
-          if ($cols.Count -ne 20) { throw "列数应为 20，实际 $($cols.Count)" }
+          if ($cols.Count -ne 58) { throw "列数应为 58，实际 $($cols.Count)" }
+
+          $expectedPrefix = @(
+            '电脑名称', '电脑型号', 'IP地址', 'MAC地址',
+            'CPU型号', 'CPU核心数', 'CPU线程数', 'CPU频率(MHz)',
+            '内存大小(GB)', '内存类型', '内存频率(MHz)',
+            '显卡型号', '显卡显存(MB)', '显卡频率(MHz)', '显卡内存类型', '显卡内存频率(MHz)',
+            '打印机名称', '打印机IP地址', '打印机MAC地址', '打印机端口'
+          )
+          for ($i = 0; $i -lt $expectedPrefix.Count; $i++) {
+            if ($cols[$i] -ne $expectedPrefix[$i]) {
+              throw "原表头第 $($i + 1) 列已变化：应为 $($expectedPrefix[$i])，实际 $($cols[$i])"
+            }
+          }
 
           if ([string]::IsNullOrWhiteSpace($row.'电脑名称')) { throw '电脑名称为空' }
           if ([string]::IsNullOrWhiteSpace($row.'CPU型号')) { throw 'CPU型号为空' }

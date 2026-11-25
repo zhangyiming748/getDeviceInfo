@@ -15,7 +15,9 @@ import (
 // ---------- WMI 映射结构 ----------
 
 type win32ComputerSystem struct {
-	Name string
+	Name         string
+	Model        string
+	Manufacturer string
 }
 
 type win32Processor struct {
@@ -23,6 +25,7 @@ type win32Processor struct {
 	NumberOfCores             uint32
 	NumberOfLogicalProcessors uint32
 	MaxClockSpeed             uint32
+	SocketDesignation         string
 }
 
 type win32PhysicalMemory struct {
@@ -30,6 +33,10 @@ type win32PhysicalMemory struct {
 	SMBIOSMemoryType     uint32
 	Speed                uint32
 	ConfiguredClockSpeed uint32
+	DeviceLocator        string
+	BankLabel            string
+	Manufacturer         string
+	PartNumber           string
 }
 
 type win32NetworkAdapterConfiguration struct {
@@ -37,7 +44,6 @@ type win32NetworkAdapterConfiguration struct {
 	MACAddress  string
 	IPAddress   []string
 	IPEnabled   bool
-	DNSHostName string
 }
 
 type win32NetworkAdapter struct {
@@ -49,8 +55,9 @@ type win32NetworkAdapter struct {
 // ---------- 汇总后的设备信息 ----------
 
 type DeviceInfo struct {
-	ComputerName string
-	Hostname     string
+	ComputerName  string
+	ComputerModel string
+	Hardware      HardwareInfo
 
 	IPs  []string
 	MACs []string
@@ -73,20 +80,23 @@ func collectDeviceInfo() (*DeviceInfo, []string) {
 	var warnings []string
 
 	var systems []win32ComputerSystem
-	if err := wmi.Query("SELECT Name FROM Win32_ComputerSystem", &systems); err != nil {
-		warnings = append(warnings, "读取电脑名称失败: "+err.Error())
+	if err := hardwareWMI.Query("SELECT Name, Model, Manufacturer FROM Win32_ComputerSystem", &systems); err != nil {
+		warnings = append(warnings, "读取电脑名称/型号失败: "+err.Error())
 	} else if len(systems) > 0 {
 		info.ComputerName = strings.TrimSpace(systems[0].Name)
+		info.ComputerModel = strings.TrimSpace(systems[0].Model)
+		info.Hardware.Manufacturer = strings.TrimSpace(systems[0].Manufacturer)
 	}
 
-	info.Hostname, _ = os.Hostname()
+	// 计算机名与系统 Hostname 实际是同一个名称，只保留一列；WMI 读取失败时退回 Hostname。
 	if info.ComputerName == "" {
-		info.ComputerName = info.Hostname
+		info.ComputerName, _ = os.Hostname()
 	}
 
 	collectCPU(info, &warnings)
 	collectMemory(info, &warnings)
 	collectNetwork(info, &warnings)
+	collectHardware(&info.Hardware, &warnings)
 
 	gpus, gpuWarnings := collectGPUs()
 	info.GPUs = gpus
@@ -101,18 +111,24 @@ func collectDeviceInfo() (*DeviceInfo, []string) {
 
 func collectCPU(info *DeviceInfo, warnings *[]string) {
 	var cpus []win32Processor
-	if err := wmi.Query("SELECT Name, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed FROM Win32_Processor", &cpus); err != nil {
+	if err := hardwareWMI.Query("SELECT Name, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed, SocketDesignation FROM Win32_Processor", &cpus); err != nil {
 		*warnings = append(*warnings, "读取 CPU 信息失败: "+err.Error())
 		return
 	}
 
 	var names []string
 	seen := map[string]bool{}
+	seenSocket := map[string]bool{}
 	for _, c := range cpus {
 		name := strings.TrimSpace(c.Name)
 		if name != "" && !seen[name] {
 			seen[name] = true
 			names = append(names, name)
+		}
+		socket := strings.TrimSpace(c.SocketDesignation)
+		if socket != "" && !seenSocket[socket] {
+			seenSocket[socket] = true
+			info.Hardware.CPUSockets = append(info.Hardware.CPUSockets, socket)
 		}
 		info.CPUCores += c.NumberOfCores
 		info.CPUThreads += c.NumberOfLogicalProcessors
@@ -125,7 +141,7 @@ func collectCPU(info *DeviceInfo, warnings *[]string) {
 
 func collectMemory(info *DeviceInfo, warnings *[]string) {
 	var modules []win32PhysicalMemory
-	if err := wmi.Query("SELECT Capacity, SMBIOSMemoryType, Speed, ConfiguredClockSpeed FROM Win32_PhysicalMemory", &modules); err != nil {
+	if err := hardwareWMI.Query("SELECT Capacity, SMBIOSMemoryType, Speed, ConfiguredClockSpeed, DeviceLocator, BankLabel, Manufacturer, PartNumber FROM Win32_PhysicalMemory", &modules); err != nil {
 		*warnings = append(*warnings, "读取内存信息失败: "+err.Error())
 		return
 	}
@@ -138,6 +154,16 @@ func collectMemory(info *DeviceInfo, warnings *[]string) {
 			continue
 		}
 		total += m.Capacity
+
+		slot := strings.TrimSpace(m.DeviceLocator)
+		if slot == "" {
+			slot = strings.TrimSpace(m.BankLabel)
+		}
+		info.Hardware.MemoryModules = append(info.Hardware.MemoryModules, MemoryModuleInfo{
+			Slot:         slot,
+			Manufacturer: strings.TrimSpace(m.Manufacturer),
+			PartNumber:   strings.TrimSpace(m.PartNumber),
+		})
 
 		if t := memoryTypeName(m.SMBIOSMemoryType); t != "" && !seenType[t] {
 			seenType[t] = true
@@ -167,15 +193,12 @@ func collectMemory(info *DeviceInfo, warnings *[]string) {
 
 func collectNetwork(info *DeviceInfo, warnings *[]string) {
 	var configs []win32NetworkAdapterConfiguration
-	if err := wmi.Query("SELECT Description, MACAddress, IPAddress, IPEnabled, DNSHostName FROM Win32_NetworkAdapterConfiguration WHERE IPEnabled = TRUE", &configs); err != nil {
+	if err := wmi.Query("SELECT Description, MACAddress, IPAddress, IPEnabled FROM Win32_NetworkAdapterConfiguration WHERE IPEnabled = TRUE", &configs); err != nil {
 		*warnings = append(*warnings, "读取网卡 IP 信息失败: "+err.Error())
 	} else {
 		var v4, v6 []string
 		seenIP := map[string]bool{}
 		for _, c := range configs {
-			if info.Hostname == "" && c.DNSHostName != "" {
-				info.Hostname = c.DNSHostName
-			}
 			for _, raw := range c.IPAddress {
 				ip := strings.TrimSpace(raw)
 				if !usableIP(ip) || seenIP[ip] {
@@ -263,13 +286,13 @@ func memoryTypeName(code uint32) string {
 
 // ---------- CSV 输出 ----------
 
-var csvHeader = []string{
-	"电脑名称", "Hostname", "IP地址", "MAC地址",
+var csvHeader = append([]string{
+	"电脑名称", "电脑型号", "IP地址", "MAC地址",
 	"CPU型号", "CPU核心数", "CPU线程数", "CPU频率(MHz)",
 	"内存大小(GB)", "内存类型", "内存频率(MHz)",
 	"显卡型号", "显卡显存(MB)", "显卡频率(MHz)", "显卡内存类型", "显卡内存频率(MHz)",
 	"打印机名称", "打印机IP地址", "打印机MAC地址", "打印机端口",
-}
+}, hardwareCSVHeader...)
 
 func writeCSV(path string, info *DeviceInfo) error {
 	if dir := filepath.Dir(path); dir != "" {
@@ -302,9 +325,9 @@ func writeCSV(path string, info *DeviceInfo) error {
 }
 
 func buildRecord(info *DeviceInfo) []string {
-	return []string{
+	record := []string{
 		info.ComputerName,
-		info.Hostname,
+		info.ComputerModel,
 		strings.Join(info.IPs, "/"),
 		strings.Join(info.MACs, "/"),
 		info.CPUModel,
@@ -324,6 +347,7 @@ func buildRecord(info *DeviceInfo) []string {
 		printerCells(info.Printers, func(p PrinterInfo) string { return p.MAC }),
 		printerCells(info.Printers, func(p PrinterInfo) string { return portLabel(p.PortName) }),
 	}
+	return append(record, hardwareRecord(info)...)
 }
 
 // gpuCells 按显卡顺序拼接，缺失值用 "-" 占位以保证各列对齐
